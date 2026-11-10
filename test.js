@@ -1,31 +1,33 @@
 // test.js
-// Prove the service is single-use under concurrency.
-//
-// TODO:
-//   1. Issue one token.
-//   2. Fire 5 consumeToken calls AT ONCE with Promise.all.
-//   3. Count how many returned { ok: true } and assert it is exactly 1.
-//   4. Print the winners count so it shows in the output.
+// Prove that a token can be consumed at most once under concurrency.
 
+import assert from "node:assert/strict";
 import { issueToken, consumeToken, closeRedis } from "./token-service.js";
 
 async function main() {
-  const id = await issueToken({ userId: 42 }, 60);
-  console.log("issued token:", id);
+  try {
+    const id = await issueToken({ userId: 42 }, 60);
+    console.log("issued token:", id);
 
-  // TODO: fire 5 consumers concurrently with Promise.all
-  const results = await Promise.all([
-    // consumeToken(id), consumeToken(id), consumeToken(id),
-    // consumeToken(id), consumeToken(id),
-  ]);
+    // All five requests are started together. Redis GETDEL makes the consume
+    // operation atomic, so exactly one request can receive the stored value.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => consumeToken(id))
+    );
 
-  const winners = results.filter((r) => r.ok).length;
-  console.log("winners:", winners); // expect exactly 1
+    const winners = results.filter((result) => result.ok).length;
+    console.log("winners:", winners);
+    assert.equal(winners, 1, "A token must be consumed exactly once");
 
-  console.assert(winners === 1, "SINGLE-USE VIOLATED! winners = " + winners);
-  if (winners === 1) console.log("PASS: token was single-use.");
-
-  await closeRedis();
+    const winner = results.find((result) => result.ok);
+    assert.deepEqual(winner.payload, { userId: 42 });
+    console.log("PASS: token was single-use.");
+  } finally {
+    await closeRedis();
+  }
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});
